@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class Server:
-    def __init__(self, host="0.0.0.0", port=None, checkpoint=None, device="cuda:0", override_mode=None, debug=False):
+    def __init__(self, host="0.0.0.0", port=None, checkpoint=None, device="cuda:0", debug=False):
         self.host = host
         self.port = port
         self.debug = debug
@@ -42,7 +42,7 @@ class Server:
         from hikari.server.model_wrapper import ModelWrapper
 
         self.model_wrapper = ModelWrapper(
-            checkpoint=checkpoint, device=device, override_mode=override_mode, debug=debug
+            checkpoint=checkpoint, device=device, debug=debug
         )
         self.timer = Timer(logger=logger)
 
@@ -214,11 +214,10 @@ class Server:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hikari S2S WebSocket server")
+    parser = argparse.ArgumentParser(description="Hikari S2T WebSocket server")
     parser.add_argument("--port", default=4440, type=int, help="WebSocket server port")
     parser.add_argument("--checkpoint", required=True, type=str, help="Path to model checkpoint")
     parser.add_argument("--device", default="cuda:0", type=str, help="CUDA device")
-    parser.add_argument("--override-mode", default=None, type=str, choices=[None, "s2s", "s2t"])
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     if args.debug:
@@ -230,7 +229,7 @@ def main():
         port=args.port,
         checkpoint=args.checkpoint,
         device=args.device,
-        override_mode=args.override_mode,
+        # override_mode=args.override_mode,
         debug=args.debug,
     )
 

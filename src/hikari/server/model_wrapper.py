@@ -9,18 +9,17 @@ import torch
 from termcolor import cprint
 from tqdm import trange
 
-from hikari.models.compilation_utils import CUDAGraphed, GraphedDepthDecoder
+from hikari.models.compilation_utils import CUDAGraphed
 from hikari.models.configuration_hikari import HikariConfig
-from hikari.models.hikari_model import CodesBuffer, HikariForConditionalGeneration
-from hikari.utils import Timer, get_log_mel, sample_with_suppression, tonp
-from transformers import MimiModel, WhisperProcessor
-from transformers.generation.configuration_utils import GenerationConfig
+from hikari.models.hikari_model import HikariForConditionalGeneration
+from hikari.utils import Timer, get_log_mel, sample_with_suppression
+from transformers import  WhisperProcessor
 
 logger = logging.getLogger(__name__)
 
 
 class ModelWrapper:
-    def __init__(self, checkpoint=None, device="cuda:0", override_mode=None, debug=False):
+    def __init__(self, checkpoint=None, device="cuda:0", debug=False):
         self.SPEECH_THRESHOLD = 0.8
         self.device = device
         self.debug = debug
@@ -30,20 +29,6 @@ class ModelWrapper:
         cprint(f"Using device: {device}", "cyan", attrs=["bold"])
         whisper_config = HikariConfig.from_pretrained(checkpoint)
         whisper_config.use_cache = False  # TODO: disable for now, fix later
-
-        if override_mode is not None:
-            whisper_config.s2s = True if override_mode == "s2s" else False
-        if getattr(whisper_config, "s2s", False):
-            cprint("Speech-to-speech model detected.", "green", attrs=["bold"])
-            self.s2s = whisper_config.s2s
-        else:
-            self.s2s = False
-        if self.s2s:
-            self.mimi_model = MimiModel.from_pretrained("kyutai/mimi").to(
-                device=self.device,
-                dtype=torch.half,
-            )
-            self.mimi_model.eval()
 
         attn_implementation = "sdpa"
         self.WAIT_PENALTY_TYPE = "additive"
@@ -115,47 +100,20 @@ class ModelWrapper:
                     device=device,
                 )
                 rope_position_ids = torch.arange(EFFECTIVE_WINDOW, device=device).unsqueeze(0)
-                codebooks = torch.randint(high=2047, size=(1, EFFECTIVE_WINDOW, 8), device=device)
 
                 _ = main_graphed_decoder(
                     decoder_input_ids,
                     encoder_hidden_states,
                     rope_position_ids,
-                    codebooks,
+                    None,
                 )
         else:
             main_graphed_decoder = None
             compiled_encoder = self._model.model.encoder.forward
 
-        if self.s2s and not debug:
-            graphed_decoder = GraphedDepthDecoder(self._model.depth_decoder, 1, warmup_steps=3, disable=debug)
-            for _ in trange(10, desc="Capturing depth decoder graph"):
-                text_token = torch.randint(high=2047, size=(1, 1), device=device)
-                last_hidden_state = torch.randn(size=(1, 1, 1024), device=device, dtype=dtype)
-                begin_suppress_tokens = [random.randint(0, 2047) for _ in range(4)]
-
-                graphed_decoder(
-                    text_token,
-                    last_hidden_state,
-                    begin_suppress_tokens,
-                )
-
-            self._model.depth_decoder_generation_config = GenerationConfig(
-                do_sample=False,
-            )
 
         self.compiled_encoder = compiled_encoder
         self._model.model.main_graphed_decoder = main_graphed_decoder
-        if self.s2s:
-            self._model.graphed_decoder = graphed_decoder
-        self._model.codes_buffer = CodesBuffer(max_len=self.EFFECTIVE_WINDOW)
-        self._model.codes_buffer.reset()
-        self._model.codes_buffer.to(device=self._model.device)
-
-        self._model.last_sampled_semantic_token = torch.tensor([[0]], device=self._model.device, dtype=torch.long)
-        self._model.suppress_repetitive_cb0 = False
-        self._model.previous_codebook_0 = deque([0], maxlen=2)
-        self._model.SILENCE_TOKENS = [1926]
 
         cprint(
             f"rotary_emb in decoder sattn: {self._model.model.decoder.layers[0].self_attn.rotary_emb}", color="yellow"
@@ -208,7 +166,6 @@ class ModelWrapper:
         self._s2s_prep(debug=debug)
 
     def reset(self):
-        self.DEQUE_OF_CODES = deque(maxlen=125)
         self.full_audio = []
         self.wait_penalty = self.BASELINE_WAIT_PENALTY
         self.silence = []
@@ -276,24 +233,7 @@ class ModelWrapper:
             self.positions.append(self.positions[-1] + 1)
 
             logits = outputs.logits.clone()
-            if getattr(outputs, "generated_codes", None) is not None:
-                self.DEQUE_OF_CODES.append(outputs.generated_codes[:, 1:].unsqueeze(2).clone())
-                stacked = torch.cat(list(self.DEQUE_OF_CODES), dim=-1)
-                dec_pred = tonp(
-                    self.mimi_model.decode(
-                        stacked.to(
-                            self.mimi_model.device,
-                            dtype=torch.long,
-                        )
-                    )
-                    .audio_values.squeeze()
-                    .to(torch.float32)
-                )
-                dec_pred = dec_pred[-1920:]
-                self.SRC_AUDIO.append(windowed_audio.copy()[-1280:])
-                self.PRED_AUDIO.append(dec_pred.copy())
-            else:
-                dec_pred = None
+            dec_pred = None
 
             max_logit = logits.argmax(dim=-1)[0][pos].item()
             if max_logit != 93 and max_logit in self.decoder_input_ids_lst[-5:]:

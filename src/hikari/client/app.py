@@ -251,7 +251,7 @@ def run_app(CHUNK_MS, server_port, app_port):
                     additional_outputs("", "Error", None, telemetry),
                 )
 
-    title = "Hikari S2ST (WebRTC)"
+    title = "Hikari S2T (WebRTC)"
 
     with gr.Blocks(title=title) as demo:
         title_markdown = gr.Markdown(f"# {title}")
@@ -419,7 +419,7 @@ def run_app(CHUNK_MS, server_port, app_port):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hikari S2ST WebRTC client")
+    parser = argparse.ArgumentParser(description="Hikari S2T WebRTC client")
     parser.add_argument("--chunk-ms", type=int, default=80, help="Chunk size in milliseconds")
     parser.add_argument("--server-port", type=int, required=True, help="WebSocket server port")
     parser.add_argument("--app-port", type=int, default=5666, help="Frontend app port")

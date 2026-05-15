@@ -4,6 +4,8 @@
 
 Hikari is a streaming speech-to-text translation system built on a custom Whisper variant with a fully causal encoder, and a depth decoder for audio token generation. It uses WebRTC for real-time browser-based interaction. Hikari currently supports English-Japanese, English-Russian, English-German , Japanese-English language pairs as well as streaming ASR in English.
 
+![](assets/output.gif)
+
 ## Quick Start
 
 ### 1. Install
@@ -56,8 +58,7 @@ uv pip install "hikari @ git+https://github.com/sbintuitions/hikari"
 hikari-server \
     --port 4440 \
     --checkpoint sbintuitions/hikari-medium \
-    --device cuda:0 \
-    --override-mode s2t
+    --device cuda:0
 ```
 
 The `--checkpoint` accepts a HuggingFace Hub ID (downloaded automatically) or a local path. The server loads the model, captures CUDA graphs for the encoder, decoder, and depth decoder, then listens for WebSocket connections on the specified port.
@@ -110,6 +111,10 @@ Browser (mic) ──WebRTC──▶ Gradio Client ──WebSocket──▶ Serve
                                                          │
 ◀────────────────────────────────────────────────────── text
 ```
+
+## Acknowledgements
+
+This code was inspired by OpenAI's [Whisper](https://huggingface.co/openai/whisper-medium) and reuses code components from Kyutai's [Moshi](https://github.com/kyutai-labs/moshi).
 
 ## Citation
 

@@ -49,11 +49,6 @@ from transformers.utils import (
 from transformers import initialization as init
 from .configuration_hikari import HikariConfig
 from transformers.models.whisper.generation_whisper import WhisperGenerationMixin
-from .conformer_encoder import WhisperConformerEncoder
-from transformers import MimiModel
-from transformers import Wav2Vec2ConformerConfig
-from transformers.models.moshi.modeling_moshi import MoshiRotaryEmbedding, apply_rotary_pos_emb
-from dataclasses import dataclass
 
 if is_torch_flex_attn_available():
     from torch.nn.attention.flex_attention import BlockMask
@@ -243,9 +238,9 @@ class WhisperAttention(nn.Module):
         is_causal: bool = False,
         layer_idx: Optional[int] = None,
         config: Optional[HikariConfig] = None,
-        location: Optional[str] = None,  # NOTE: added these properties
-        sort: Optional[str] = None,  # NOTE: added these properties
-        decoder_time_dilation: Optional[int] = 1,  # NOTE: added this property
+        location: Optional[str] = None,
+        sort: Optional[str] = None,
+        decoder_time_dilation: Optional[int] = 1,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -253,16 +248,13 @@ class WhisperAttention(nn.Module):
         self.dropout = dropout
         self.head_dim = embed_dim // num_heads
         self.config = config
-        self.diagnostics = False  # NOTE: added this member
-        self.location = location  # NOTE: added these properties
-        self.sort = sort  # NOTE: added these properties
-        self.decoder_time_dilation = decoder_time_dilation  # NOTE: added this property
-        self._effective_window = None # NOTE: only used for generation with KV (max num decoder tokens)
+        self.diagnostics = False
+        self.location = location
+        self.sort = sort
+        self.decoder_time_dilation = decoder_time_dilation
+        self._effective_window = None
         
-        if getattr(config, "use_rope", False):
-            self.rotary_emb = MoshiRotaryEmbedding(self.config) # FIXME: replace with proper config
-        else:
-            self.rotary_emb = None
+        self.rotary_emb = None
 
         if (self.head_dim * num_heads) != self.embed_dim:
             raise ValueError(
@@ -271,8 +263,7 @@ class WhisperAttention(nn.Module):
             )
         self.scaling = self.head_dim**-0.5
         self.is_decoder = is_decoder
-        # self.is_causal = getattr(self.config, "encoder_is_causal", is_causal)  # NOTE: changed here
-        self.is_causal = is_causal  # NOTE: changed here
+        self.is_causal = is_causal
 
         if layer_idx is None and is_decoder:
             logger.warning_once(
@@ -329,12 +320,6 @@ class WhisperAttention(nn.Module):
         else:
             key_states = self._shape(self.k_proj(current_states), -1, bsz)
             value_states = self._shape(self.v_proj(current_states), -1, bsz)
-            if past_key_value is not None:
-                # save all key/value_states to cache to be re-used for fast auto-regressive generation
-                # cache_position = cache_position if not is_cross_attention else None  # NOTE: commented out
-                key_states, value_states = past_key_value.update(
-                    key_states, value_states, self.layer_idx, {"cache_position": cache_position}
-                )
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3))
 
@@ -367,33 +352,6 @@ class WhisperAttention(nn.Module):
         attn_output2 = attn_output1.reshape(bsz, tgt_len, self.embed_dim)
 
         attn_output = self.out_proj(attn_output2)
-
-        # NOTE: my diagnostics
-        if self.diagnostics:
-            if self._num_calls < 10 and self.layer_idx == 0:
-                kv = True if query_states.shape[2] == 1 else False
-                torch.save(
-                    dict(
-                        query_states=query_states,
-                        key_states=key_states,
-                        value_states=value_states,
-                        is_causal="none",
-                        attn_mask="none",
-                        attn_output=attn_output,
-                        attn_output0=attn_output0,
-                        attn_output1=attn_output1,
-                        attn_output2=attn_output2,
-                        cache_position=cache_position,
-                        hidden_states=hidden_states,
-                        layer_idx=self.layer_idx,
-                    ),
-                    (
-                        f"kv_{self._num_calls}.{kv}.self_att.pt"
-                        if not is_cross_attention
-                        else f"kv_{self._num_calls}.{kv}.cross_att.pt"
-                    ),
-                )
-            self._num_calls += 1
 
         return attn_output, attn_weights, past_key_value
 
@@ -458,12 +416,6 @@ class WhisperFlashAttention2(WhisperAttention):
         else:
             key_states = self._shape(self.k_proj(current_states), -1, bsz)
             value_states = self._shape(self.v_proj(current_states), -1, bsz)
-            if past_key_value is not None:
-                # save all key/value_states to cache to be re-used for fast auto-regressive generation
-                # cache_position = cache_position if not is_cross_attention else None  # NOTE: commended it out
-                key_states, value_states = past_key_value.update(
-                    key_states, value_states, self.layer_idx, {"cache_position": cache_position}
-                )
 
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]
         #  We would need to refactor the KV cache to be able to avoid many of these transpose/reshape/view.
@@ -652,9 +604,6 @@ class WhisperSdpaAttention(WhisperAttention):
         if past_key_value is not None:  # from model.forward()
             is_updated = past_key_value.is_updated.get(self.layer_idx)
             if is_cross_attention:
-                # after the first generated id, we can subsequently re-use all key/value_states from cache
-                # past_key_value.is_updated[self.layer_idx] = True # NOTE: ⚠️ commented out
-                # past_key_value = past_key_value.cross_attention_cache # NOTE: ⚠️ commented out
                 past_key_value = key_value_states
             else:
                 past_key_value = past_key_value.self_attention_cache
@@ -662,44 +611,14 @@ class WhisperSdpaAttention(WhisperAttention):
         # use key_value_states if cross attention
         current_states = key_value_states if key_value_states is not None else hidden_states
         if is_cross_attention and past_key_value is not None and is_updated:
-            # NOTE: We never take KV from the encoder, commented out 2 lines below
-            # key_states = past_key_value.key_cache[self.layer_idx]
-            # value_states = past_key_value.value_cache[self.layer_idx]
-            # NOTE: instead, we project current states which are the encoder outputs
-            # and don't apply RoPE 
             key_states = self._shape(self.k_proj(current_states), -1, bsz)
             value_states = self._shape(self.v_proj(current_states), -1, bsz)
         else:
             key_states = self._shape(self.k_proj(current_states), -1, bsz)
             value_states = self._shape(self.v_proj(current_states), -1, bsz)
 
-            # --- INSERT ROPE HERE ---
-            if (
-                not is_cross_attention and 
-                self.rotary_emb is not None and 
-                self.sort == "self-attn" and 
-                self.location == "decoder" and
-                rope_position_ids is not None
-                ):
-                # RoPE requires position_ids of shape [batch, seq_len]
-                # We derive it from cache_position (which is provided by Whisper's forward)
-                p_ids = rope_position_ids
-                
-                # Generate cos/sin based on the current position_ids
-                # value_states used only for device/dtype reference
-                cos, sin = self.rotary_emb(value_states, p_ids)
-                
-                # Apply the rotation to Q and K
-                query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-            # -------------------------
 
             if past_key_value is not None and not is_cross_attention:
-                # save all key/value_states to cache to be re-used for fast auto-regressive generation
-                # cache_position = cache_position if not is_cross_attention else None  # NOTE: commented it out
-
-                # calling update on a `DynamicCache` object (either self_attention_cache
-                # of cross_attention_cache) will add the just obtained K,V to it and update
-                # the number of `seen_tokens`. The line below adds K,V for the current position to the cache and returns the [K-cache + new K] and [v-cache + new v]
                 key_states, value_states = past_key_value.update(
                     key_states, value_states, self.layer_idx, {"cache_position": cache_position}
                 )
@@ -708,13 +627,8 @@ class WhisperSdpaAttention(WhisperAttention):
         if attention_mask is not None:  # no matter the length, we just slice it
             causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
 
-        # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
-        # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
-        # The tgt_len > 1 is necessary to match with AttentionMaskConverter.to_causal_4d that does not create a causal mask in case tgt_len == 1.
         is_causal = True if self.is_causal and causal_mask is None and tgt_len > 1 else False
 
-        # NOTE: if generating (kv-caching) and x-attn
-        # past_key_value is only not None if (generating (tgt_len==1) AND using kv-cache)
         if (
             past_key_value is not None and 
             tgt_len == 1 and 
@@ -726,7 +640,7 @@ class WhisperSdpaAttention(WhisperAttention):
                 bsz,
                 tgt_len,
                 key_states.shape[-2],
-                cache_position[-1],  # NOTE: explain this здесь скорее всего ошибка
+                cache_position[-1],
                 dtype=key_states.dtype,
                 device=key_states.device,
             )
@@ -742,29 +656,8 @@ class WhisperSdpaAttention(WhisperAttention):
                 dtype=key_states.dtype,
                 device=key_states.device,
             )
-            # if tgt_len == 1:  # NOTE FIXME DANGER
-            #     causal_mask = causal_mask[:, -1:, :]  # NOTE FIXME must be handled in `_create_dilated_cr...`
             is_causal = False
-            causal_mask.unsqueeze_(1)  # NOTE: added this [B, 1, q_len, k_len]
-
-        # NOTE: SDPA with memory-efficient backend is currently (torch==2.1.2) bugged when using non-contiguous inputs and a custom attn_mask,
-        # but we are fine here as `_shape` do call `.contiguous()`. Reference: https://github.com/pytorch/pytorch/issues/112577
-
-                
-        # try:
-        #     if self.sort == "self-attn":
-        #         sa = int(causal_mask.squeeze().bool().tolist().index(True))
-        #     else:
-        #         sa = None
-        # except:
-        #     sa = None
-        # try:
-        #     if self.sort == "cross-attn":
-        #         xa =  int(causal_mask.squeeze().bool().tolist().index(True)/4)
-        #     else:
-        #         xa = None
-        # except:
-        #     xa = None
+            causal_mask.unsqueeze_(1)
 
         attn_output0 = torch.nn.functional.scaled_dot_product_attention(
             query_states,  # torch.Size([B, 12, 1, 64])
@@ -772,7 +665,7 @@ class WhisperSdpaAttention(WhisperAttention):
             value_states,  # torch.Size([1, 12, 1500, 64])
             attn_mask=causal_mask, # must be (B, 1, 375, 1500) @ full fwd pass at training; (B, 1, 1, 1500) @ generation with KV-cache
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal,  # NOTE: this is how it should be
+            is_causal=is_causal,
         )
 
         
@@ -814,11 +707,11 @@ class WhisperEncoderLayer(nn.Module):
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
             config=config,
-            is_causal=getattr(config, "encoder_is_causal", False),  # NOTE: changed here,
-            layer_idx=layer_idx,  # NOTE: changed here (added)
-            is_decoder=True,  # NOTE: changed here (added)
-            location="encoder",  # NOTE: added these properties
-            sort="self-attn",  # NOTE: added these properties
+            is_causal=getattr(config, "encoder_is_causal", False),
+            layer_idx=layer_idx,
+            is_decoder=True,
+            location="encoder",
+            sort="self-attn",
         )
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.dropout = config.dropout
@@ -895,8 +788,8 @@ class WhisperDecoderLayer(nn.Module):
             is_causal=True,
             layer_idx=layer_idx,
             config=config,
-            location="decoder",  # NOTE: added these properties
-            sort="self-attn",  # NOTE: added these properties
+            location="decoder",
+            sort="self-attn",
         )
         self.dropout = config.dropout
         self.disable_cross_attn = disable_cross_attn
@@ -909,12 +802,12 @@ class WhisperDecoderLayer(nn.Module):
             config.decoder_attention_heads,
             dropout=config.attention_dropout,
             is_decoder=True,
-            is_causal=getattr(config, "cross_attention_is_causal", False),  # NOTE: added this line
+            is_causal=getattr(config, "cross_attention_is_causal", False),
             layer_idx=layer_idx,
             config=config,
-            location="decoder",  # NOTE: added these properties
-            sort="cross-attn",  # NOTE: added these properties
-            decoder_time_dilation=config.decoder_time_dilation,  # NOTE: added this property
+            location="decoder",
+            sort="cross-attn",
+            decoder_time_dilation=config.decoder_time_dilation,
         )
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
         self.fc1 = nn.Linear(self.embed_dim, config.decoder_ffn_dim)
@@ -997,7 +890,7 @@ class WhisperDecoderLayer(nn.Module):
                 layer_head_mask=cross_attn_layer_head_mask,
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
-                cache_position=cache_position,  # NOTE: WARNING, maybe remove it (added this line)
+                cache_position=cache_position,
             )
             hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
             hidden_states = residual + hidden_states
@@ -1215,7 +1108,6 @@ class WhisperEncoder(WhisperPreTrainedModel):
         self.embed_positions = nn.Embedding(self.max_source_positions, embed_dim)
         self.embed_positions.requires_grad_(False)
 
-        # NOTE: change this line below
         self.layers = nn.ModuleList(
             [WhisperEncoderLayer(config, layer_idx) for layer_idx in range(config.encoder_layers)]
         )
@@ -1447,7 +1339,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
             return_dict=True,
             cache_position=cache_position,
             attention_mask=attention_mask, # torch.ones(T, device=device).view(1,1)
-            rope_position_ids=None, # FIXME: ⚠️
+            rope_position_ids=None,
         )
     
     def forward(
@@ -1459,7 +1351,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
         cross_attn_head_mask=None,
         past_key_values=None,
         inputs_embeds=None,
-        position_ids=None, # FIXME: do I need them?
+        position_ids=None,
         use_cache=None,
         output_attentions=None,
         output_hidden_states=None,
@@ -1582,7 +1474,7 @@ class WhisperDecoder(WhisperPreTrainedModel):
                 device=inputs_embeds.device,
             )
 
-        if position_ids is None: # FIXME: 🤔 What is it? do I need them at all?
+        if position_ids is None:
             position_ids = cache_position.unsqueeze(0).repeat(input_shape[0], 1)
 
         if self.use_rope:
@@ -1611,8 +1503,8 @@ class WhisperDecoder(WhisperPreTrainedModel):
             cache_position, # [375]
             past_key_values.self_attention_cache if past_key_values is not None else None,
             output_attentions,
-            force=True,  # NOTE: True if you want to force the creation of the mask
-        ) # [B, 1, 375, 375]) both at inference w/ KV and at training (when no KV cache is used)
+            force=True,
+        )
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -1839,14 +1731,10 @@ class HikariDecoder(WhisperDecoder):
 
     def __init__(self, 
         config: HikariConfig, 
-        audio_vocab_size=2048, # FIXME: hardcoded
-        hidden_size=1024, # FIXME: hardcoded
+        audio_vocab_size=None,
+        hidden_size=1024,
         ):
         super().__init__(config)
-
-        # added modules:       
-        self.embed_semantic_token = nn.Embedding(audio_vocab_size + 1, hidden_size)
-        self.embed_acoustic_tokens = nn.ModuleList([nn.Embedding(audio_vocab_size + 1, hidden_size) for i in range(4)]) # FIXME: hardcoded
 
         del self.embed_positions
 
@@ -1903,15 +1791,6 @@ class HikariDecoder(WhisperDecoder):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if codebooks is not None: # ☝️ NEVER change tensors in-place
-            # inputs_embeds = inputs_embeds + torch.randn_like(inputs_embeds) * 10.0
-            
-            inputs_embeds = inputs_embeds + self.embed_semantic_token(codebooks[:, :inputs_embeds.shape[1], 0]) # FIXME/NOTE: using only semantic token for now
-            for atid in range(4): # FIXME hardcoded acoustic token ids
-                inputs_embeds = inputs_embeds + self.embed_acoustic_tokens[atid](
-                    codebooks[:, :inputs_embeds.shape[1], atid+1],
-                    ) # FIXME/NOTE: using only 4 acoustic tokens for now
-
         
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1920,7 +1799,7 @@ class HikariDecoder(WhisperDecoder):
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        input_shape = inputs_embeds.size()[:-1] # NOTE: 🔴?? 
+        input_shape = inputs_embeds.size()[:-1]
 
         return_legacy_cache = False
         return_self_attention_cache = False
@@ -1959,8 +1838,8 @@ class HikariDecoder(WhisperDecoder):
             cache_position, # [375]
             past_key_values.self_attention_cache if past_key_values is not None else None,
             output_attentions,
-            force=True,  # NOTE: True if you want to force the creation of the mask
-        ) # torch.Size([4, 1, 375, 375])
+            force=True,
+        )
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -2049,337 +1928,6 @@ class HikariDecoder(WhisperDecoder):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
             cross_attentions=all_cross_attentions,
-        )
-
-
-class S2TAdapter(WhisperDecoder):
-
-    def __init__(self, 
-        config: HikariConfig, 
-        audio_vocab_size=2048, # FIXME: hardcoded
-        hidden_size=1024, # FIXME: hardcoded
-        ):
-        # NOTE: keep methods from WhisperDecoder, completely override 
-        # WhisperDecoder.__init__, but keep the internals of WhisperPreTrainedModel
-        WhisperPreTrainedModel.__init__(self, config)
-        num_s2t_layers = getattr(config, "num_s2t_layers", 2) # for backward compatibility
-        print(f"num_s2t_layers: {num_s2t_layers}")
-        cprint(f"disable_xattn_in_adapter: {getattr(config, 'disable_xattn_in_adapter', False)}", color='blue')
-        self.layers = nn.ModuleList(
-            [WhisperDecoderLayer(
-                config, 
-                layer_idx, 
-                disable_cross_attn=getattr(config, "disable_xattn_in_adapter", False),
-                ) for layer_idx in range(num_s2t_layers)]
-        )
-        self.dropout = config.dropout
-        self.layerdrop = config.decoder_layerdrop
-        self.layer_norm = nn.LayerNorm(config.d_model)
-        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self._use_sdpa = config._attn_implementation == "sdpa"
-        self.gradient_checkpointing = False
-        self.embed_semantic_token = nn.Embedding(audio_vocab_size + 1, hidden_size)
-        self.embed_acoustic_tokens = nn.ModuleList([nn.Embedding(audio_vocab_size + 1, hidden_size) for i in range(4)]) # FIXME: hardcoded
-        self.audio_guidance = getattr(config, "audio_guidance", "text_embeds")
-        if self.audio_guidance == "text_tokens":
-            self.embed_text_token = nn.Embedding(config.vocab_size, config.d_model, config.pad_token_id) # FIXME: what is padding_idx?
-        cprint(f"S2TAdapter: audio_guidance: {self.audio_guidance}", color="red")
-        self.post_init()
-
-    def forward_graphed_noKV(
-        self,
-        encoder_last_hidden_state,  # [B, 1500, 1024]
-        decoder_last_hidden_state,  # [B, effective_window, 1024]
-        adapter_input_codes, # [B, effective_window, 8]
-        positions, # [B, effective_window]
-        lm_logits, # [B, effective_window, 51865]
-    ):
-        """Cudagraph-friendly forward wrapper for inference w/o KV"""
-        return self.forward(
-            attention_mask=None,  #
-            encoder_hidden_states=encoder_last_hidden_state,  # [B, 1500, 1024]
-            head_mask=None,
-            cross_attn_head_mask=None,
-            past_key_values=None,
-            inputs_embeds=decoder_last_hidden_state,
-            use_cache=False,
-            output_attentions=None,
-            output_hidden_states=None,
-            return_dict=True,
-            cache_position=None,
-            codebooks=adapter_input_codes,  # TODO: Get codebook B, 375, depth
-            rope_position_ids=positions,
-            lm_logits=lm_logits,
-            text_tokens=None,  # text_tokens to b
-        )
-
-    def forward(
-        self,
-        attention_mask=None,
-        encoder_hidden_states=None,
-        head_mask=None,
-        cross_attn_head_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        cache_position=None,
-        codebooks=None,
-        rope_position_ids=None,
-        lm_logits: Optional[torch.FloatTensor] = None,
-        text_tokens: Optional[torch.LongTensor] = None, # text labels (at training), sampled tokens (at inference)
-    ):
-        r"""
-        Args:
-            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
-                - 1 for tokens that are **not masked**,
-                - 0 for tokens that are **masked**.
-
-                [What are attention masks?](../glossary#attention-mask)
-            encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, encoder_sequence_length, hidden_size)`, *optional*):
-                Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
-                of the decoder.
-            head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-                Mask to nullify selected heads of the attention modules. Mask values selected in `[0, 1]`:
-
-                - 1 indicates the head is **not masked**,
-                - 0 indicates the head is **masked**.
-
-            cross_attn_head_mask (`torch.Tensor` of shape `(decoder_layers, decoder_attention_heads)`, *optional*):
-                Mask to nullify selected heads of the attention modules in encoder to avoid performing cross-attention
-                on hidden heads. Mask values selected in `[0, 1]`:
-
-                - 1 indicates the head is **not masked**,
-                - 0 indicates the head is **masked**.
-
-            past_key_values (`EncoderDecoderCache` or `tuple(tuple(torch.FloatTensor))`, *optional*):
-                Pre-computed hidden-states that can be used to speed up auto-regressive (sequential) decoding. There are
-                four sets of pre-computed hidden-states: key and values states in the self-attention blocks (2) and
-                in the cross-attention blocks (2). The `past_key_values` are returned when `use_cache=True` is passed or
-                when `config.use_cache=True`
-
-                Two formats are allowed:
-                - An [`~cache_utils.EncoderDecoderCache`] instance;
-                - Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of
-                shape `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
-                `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
-
-                If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those
-                that don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of
-                all `decoder_input_ids` of shape `(batch_size, sequence_length)`.
-            inputs_embeds (`torch.FloatTensor` of
-                shape `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing
-                `input_ids` you can choose to directly pass an embedded representation. This is useful if you want more
-                control over how to convert `input_ids` indices into associated vectors than the model's internal
-                embedding lookup matrix.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            output_hidden_states (`bool`, *optional*):
-                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
-                for more detail.
-            return_dict (`bool`, *optional*):
-                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-                Indices depicting the position of the input sequence tokens in the sequence. It is used to update the
-                cache in the correct position and to infer the complete sequence length.
-        """
-        
-        # embed the audio tokens and add them to input_embeds
-
-        if codebooks is not None: # ☝️ NEVER change tensors in-place
-            # inputs_embeds = inputs_embeds + torch.randn_like(inputs_embeds) * 10.0
-            if self.audio_guidance == "text_embeds":
-                inputs_embeds = inputs_embeds + self.embed_semantic_token(codebooks[:, :inputs_embeds.shape[1], 0]) # FIXME/NOTE: using only semantic token for now
-                for atid in range(4): # FIXME hardcoded acoustic token ids
-                    inputs_embeds = inputs_embeds + self.embed_acoustic_tokens[atid](
-                        codebooks[:, :inputs_embeds.shape[1], atid+1],
-                        ) # FIXME/NOTE: using only 4 acoustic tokens for now
-            elif self.audio_guidance == "text_tokens":
-                # text_tokens = lm_logits.argmax(dim=-1) # FIXME: add sampling here
-                # NOTE: use RoPE (!). If audio_guidance == "text_embeds", embeds already should have some positional info
-                # NOTE: we want the adapter to output good embeddings for the depth transformer
-                # exclusively from the tokens generated by the decoder
-                
-                if text_tokens is None and lm_logits is not None: # as at inference
-                    text_tokens = lm_logits.argmax(dim=-1) # FIXME: 👈
-                inputs_embeds = self.embed_text_token(text_tokens)
-                inputs_embeds = inputs_embeds + self.embed_semantic_token(codebooks[:, :inputs_embeds.shape[1], 0]) # FIXME/NOTE: using only semantic token for now
-                for atid in range(4): # FIXME hardcoded acoustic token ids
-                    inputs_embeds = inputs_embeds + self.embed_acoustic_tokens[atid](
-                        codebooks[:, :inputs_embeds.shape[1], atid+1],
-                        ) # FIXME/NOTE: using only 4 acoustic tokens for now
-
-        
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        input_shape = inputs_embeds.size()[:-1] # NOTE: 🔴?? 
-
-        return_legacy_cache = False
-        return_self_attention_cache = False
-        if use_cache or past_key_values is not None:
-            if isinstance(past_key_values, Cache) and not isinstance(past_key_values, EncoderDecoderCache):
-                return_self_attention_cache = True
-                past_key_values = EncoderDecoderCache(past_key_values, DynamicCache())
-            elif not isinstance(past_key_values, EncoderDecoderCache):
-                return_legacy_cache = True
-                logger.warning_once(
-                    "Passing a tuple of `past_key_values` is deprecated and will be removed in Transformers v4.43.0. "
-                    "You should pass an instance of `EncoderDecoderCache` instead, e.g. "
-                    "`past_key_values=EncoderDecoderCache.from_legacy_cache(past_key_values)`."
-                )
-                past_key_values = EncoderDecoderCache.from_legacy_cache(past_key_values)
-
-        past_key_values_length = 0
-        if cache_position is not None:
-            past_key_values_length = cache_position[0]
-        elif past_key_values is not None:
-            past_key_values_length = past_key_values.get_seq_length()
-
-        if cache_position is None:
-            cache_position = torch.arange(
-                past_key_values_length,
-                past_key_values_length + input_shape[1],
-                device=inputs_embeds.device,
-            )
-
-        hidden_states = inputs_embeds
-        hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
-
-        causal_mask = self._update_causal_mask(
-            attention_mask, # [4, 375]
-            inputs_embeds, # [4, 375, 1024])
-            cache_position, # [375]
-            past_key_values.self_attention_cache if past_key_values is not None else None,
-            output_attentions,
-            force=True,  # NOTE: True if you want to force the creation of the mask
-        ) # torch.Size([4, 1, 375, 375])
-
-        if self.gradient_checkpointing and self.training:
-            if use_cache:
-                logger.warning_once(
-                    "`use_cache = True` is incompatible with gradient checkpointing. Setting `use_cache = False`..."
-                )
-                use_cache = False
-        # decoder layers
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        all_cross_attentions = () if (output_attentions and encoder_hidden_states is not None) else None
-
-        # check if head_mask/cross_attn_head_mask has a correct number of layers specified if desired
-        for attn_mask, mask_name in zip([head_mask, cross_attn_head_mask], ["head_mask", "cross_attn_head_mask"]):
-            if attn_mask is not None:
-                assert attn_mask.size()[0] == (len(self.layers)), (
-                    f"The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for"
-                    f" {head_mask.size()[0]}."
-                )
-        for idx, decoder_layer in enumerate(self.layers):
-            # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-            if self.training:
-                dropout_probability = torch.rand([])
-                if dropout_probability < self.layerdrop:
-                    continue
-
-            if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
-                    hidden_states,
-                    causal_mask,
-                    encoder_hidden_states,
-                    None,  # encoder attention mask
-                    head_mask[idx] if head_mask is not None else None,
-                    cross_attn_head_mask[idx] if cross_attn_head_mask is not None else None,
-                    None,  # past_key_value
-                    output_attentions,
-                    use_cache,
-                    cache_position,
-                    rope_position_ids,
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states, 
-                    attention_mask=causal_mask, # ? torch.Size([B, 1, 375, 376])
-                    encoder_hidden_states=encoder_hidden_states, # B, 1500, 1024
-                    layer_head_mask=(head_mask[idx] if head_mask is not None else None),
-                    cross_attn_layer_head_mask=(
-                        cross_attn_head_mask[idx] if cross_attn_head_mask is not None else None
-                    ),
-                    past_key_value=past_key_values if use_cache else None,
-                    output_attentions=output_attentions, # False
-                    use_cache=use_cache, # False
-                    cache_position=cache_position, # [375]
-                    rope_position_ids=rope_position_ids,
-                )
-            hidden_states = layer_outputs[0]
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
-
-                if encoder_hidden_states is not None:
-                    all_cross_attentions += (layer_outputs[2],)
-
-        hidden_states = self.layer_norm(hidden_states)
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-
-        next_cache = past_key_values if use_cache else None
-        if return_self_attention_cache:
-            next_cache = past_key_values.self_attention_cache
-        if return_legacy_cache:
-            next_cache = past_key_values.to_legacy_cache()
-        if not return_dict:
-            return tuple(
-                v
-                for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_cross_attentions]
-                if v is not None
-            )
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=hidden_states,
-            past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
-            cross_attentions=all_cross_attentions,
-        )
-    
-class DummyS2TAdapter(WhisperDecoder):
-
-    def __init__(self, config):
-        # NOTE: keep methods from WhisperDecoder, completely override 
-        # WhisperDecoder.__init__, but keep the internals of WhisperPreTrainedModel
-        WhisperPreTrainedModel.__init__(self, config) 
-
-    def forward(
-        self,
-        attention_mask=None,
-        encoder_hidden_states=None,
-        head_mask=None,
-        cross_attn_head_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        cache_position=None,
-    ):
-        return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=inputs_embeds, # we only care about this
-            past_key_values=None,
-            hidden_states=None,
-            attentions=None,
-            cross_attentions=None,
         )
 
 
@@ -2391,27 +1939,7 @@ class WhisperModel(WhisperPreTrainedModel):
     def __init__(self, config: HikariConfig):
         super().__init__(config)
 
-        if getattr(config, "conformer", False):
-            cprint("Using a Conformer encoder.", color="magenta")
-            cprint("Using a hardcoded conformer_config.", color="red")
-            conformer_config = Wav2Vec2ConformerConfig(
-                hidden_size=1024,
-                num_hidden_layers=12,
-                num_attention_heads=16,      # 1024/16 = 64 dim per head
-                intermediate_size=4096,      # Standard 4x expansion in FFN
-                hidden_act="swish",          # Conformer typically uses Swish, not GELU
-                attention_dropout=0.1,
-                # position_embeddings_type="relative", 
-                position_embeddings_type="rotary", # 
-                is_causal=True,
-                no_batch_norm=getattr(config, "no_batch_norm_in_conformer", False),
-            )
-            self.encoder = WhisperConformerEncoder(conformer_config)
-        elif getattr(config, "mimi", False):
-            cprint("Using a Mimi encoder.", color="magenta")
-            self.encoder = MimiModel.from_pretrained("kyutai/mimi", wo_decoder=True)
-        else:
-            self.encoder = WhisperEncoder(config)
+        self.encoder = WhisperEncoder(config)
         self.decoder = WhisperDecoder(config)
         # Initialize weights and apply final processing
         self.post_init()
@@ -2529,21 +2057,13 @@ class WhisperModel(WhisperPreTrainedModel):
         if encoder_outputs is None:
             input_features = self._mask_input_features(input_features, attention_mask=attention_mask)
 
-            if isinstance(self.encoder, MimiModel):
-                encoder_last_hidden_state = self.encoder.encode(input_features).last_hidden_state
-                encoder_outputs = BaseModelOutput(
-                    last_hidden_state=encoder_last_hidden_state, 
-                    hidden_states=None, 
-                    attentions=None
-                )
-            else:
-                encoder_outputs = self.encoder(
-                    input_features,
-                    head_mask=head_mask,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                )
+            encoder_outputs = self.encoder(
+                input_features,
+                head_mask=head_mask,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
         # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
@@ -3096,8 +2616,6 @@ __all__ = [
     "WhisperEncoder",
     "WhisperDecoder",
     "HikariDecoder",
-    "S2TAdapter",
-    "DummyS2TAdapter",
     "shift_tokens_right",
     "_compute_mask_indices",
 ]
