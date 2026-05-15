@@ -1,0 +1,43 @@
+[project]
+name = "hikari"
+version = "0.1.0"
+description = "Hikari: Simultaneous Speech-to-Text Translation"
+requires-python = ">=3.10"
+dependencies = [
+    # Core ML
+    "transformers @ git+https://github.com/huggingface/transformers.git@c6c7e18984",
+    "numpy",
+    "einops",
+    # Audio
+    "librosa",
+    "soundfile",
+    "openai-whisper",
+    # Server
+    "websockets",
+    "termcolor",
+    "tqdm",
+    # Client
+    "gradio>=5.0",
+    "fastrtc>=0.0.33",
+    "ten_vad",
+    "debugpy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+hikari-server = "hikari.server.app:main"
+hikari-client = "hikari.client.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hikari"]
