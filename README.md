@@ -2,7 +2,7 @@
 
 🇬🇧→🇯🇵, 🇬🇧→🇷🇺, 🇬🇧→🇩🇪, 🇯🇵→🇬🇧 and streaming ASR
 
-Hikari is a streaming speech-to-text translation system built on a custom Whisper variant with a fully causal encoder, and a depth decoder for audio token generation. It uses WebRTC for real-time browser-based interaction. Hikari currently supports English-Japanese, English-Russian, English-German , Japanese-English language pairs as well as streaming ASR in English.
+Hikari is a streaming speech-to-text translation system built on a custom Whisper variant with a fully causal encoder. It uses WebRTC for real-time browser-based interaction. Hikari currently supports English-Japanese, English-Russian, English-German , Japanese-English language pairs as well as streaming ASR in English.
 
 ![](assets/output.gif)
 
@@ -61,7 +61,7 @@ hikari-server \
     --device cuda:0
 ```
 
-The `--checkpoint` accepts a HuggingFace Hub ID (downloaded automatically) or a local path. The server loads the model, captures CUDA graphs for the encoder, decoder, and depth decoder, then listens for WebSocket connections on the specified port.
+The `--checkpoint` accepts a HuggingFace Hub ID (downloaded automatically) or a local path. The server loads the model, captures CUDA graphs for the encoder and decoder, then listens for WebSocket connections on the specified port.
 
 ### 3. Start the client
 
