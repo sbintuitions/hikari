@@ -1,6 +1,9 @@
+# copied from https://github.com/kyutai-labs/moshi
+
 # Copyright (c) Kyutai, all rights reserved.
 # This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# LICENSE file in the root directory https://github.com/kyutai-labs/moshi
+
 
 """
 Provides some extra utilities around torch compile, in particular with a way
@@ -167,84 +170,3 @@ class MoshiStaticCache(StaticCache):
             v_out = v_out.unsqueeze(1)
 
         return k_out, v_out
-
-
-class GraphedDepthDecoder:
-    def __init__(self, model, batch_size, warmup_steps=3, disable=False):
-        self.model = model
-        self.config = model.config
-        self.device = model.device
-
-        self.step_tensors = [
-            torch.tensor([i], device=self.device, dtype=torch.long) for i in range(self.config.num_codebooks)
-        ]
-
-        self.cache = MoshiStaticCache(
-            config=self.config,
-            max_batch_size=batch_size,
-            max_cache_len=self.config.num_codebooks,
-            device=self.device,
-            dtype=model.dtype,
-        )
-
-        if disable:
-            self.graphed_forward = self._generation_loop
-        else:
-            self.graphed_forward = CUDAGraphed(self._generation_loop, warmup_steps=warmup_steps)
-
-    def _generation_loop(
-        self,
-        additive_logit_suppression_mask: torch.Tensor,
-        text_token: torch.Tensor,
-        last_hidden_state: torch.Tensor,
-    ):
-        self.cache.reset()
-
-        generated_codes = [text_token]
-        current_input = text_token.unsqueeze(1)
-
-        for step in range(self.config.num_codebooks):
-            cache_pos = self.step_tensors[step]
-
-            if step == 0:
-                text_embeds = self.model.embed_text_token(current_input)
-                semantic_embeds = self.model.embed_semantic_token(current_input)
-                embeds = semantic_embeds + text_embeds
-            else:
-                embeds = self.model.embed_acoustic_token[step - 1](current_input)
-
-            outputs = self.model(
-                input_ids=None,
-                inputs_embeds=embeds,
-                last_hidden_state=last_hidden_state,
-                past_key_values=self.cache,
-                cache_position=cache_pos,
-                use_cache=True,
-                return_dict=False,
-            )
-
-            logits = outputs[0]
-            logits += additive_logit_suppression_mask[cache_pos, :]
-
-            next_token = torch.argmax(logits[:, 0, :], dim=-1, keepdim=True)
-            generated_codes.append(next_token)
-            current_input = next_token
-
-        return torch.cat(generated_codes, dim=1)
-
-    def __call__(
-        self,
-        text_token: torch.Tensor,
-        last_hidden_state: torch.Tensor,
-        begin_suppress_tokens: Optional[list] = None,
-    ):
-        additive_logit_suppression_mask = torch.zeros(
-            size=(
-                self.model.config.num_codebooks,
-                self.model.config.audio_vocab_size,
-            )
-        ).to(device=self.model.device, dtype=self.model.dtype)
-        if begin_suppress_tokens:
-            additive_logit_suppression_mask[0, begin_suppress_tokens] = -1000.0
-
-        return self.graphed_forward(additive_logit_suppression_mask, text_token, last_hidden_state)
