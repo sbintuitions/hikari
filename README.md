@@ -1,8 +1,8 @@
 # Hikari: Simultaneous Speech-to-Text Translation
 
-🇬🇧→🇯🇵, 🇬🇧→🇷🇺, 🇬🇧→🇩🇪, 🇯🇵→🇬🇧 and streaming ASR
+🇬🇧→🇯🇵, 🇬🇧→🇷🇺, 🇬🇧→🇩🇪 and streaming ASR
 
-Hikari is a streaming speech-to-text translation system built on a custom Whisper variant with a fully causal encoder. It uses WebRTC for real-time browser-based interaction. Hikari currently supports English-Japanese, English-Russian, English-German , Japanese-English language pairs as well as streaming ASR in English.
+Hikari is a streaming speech-to-text translation system built on a custom Whisper variant with a fully causal encoder. It uses WebRTC for real-time browser-based interaction. Hikari currently supports English-Japanese, English-Russian and English-German language pairs as well as streaming ASR in English.
 
 ![](assets/output.gif)
 
