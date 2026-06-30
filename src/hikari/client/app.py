@@ -329,7 +329,7 @@ def run_app(CHUNK_MS, server_port, app_port):
                 )
                 preset_tgt_lang_dropdown = gr.Dropdown(
                     label="Target Language",
-                    choices=["English", "German", "Japanese", "Russian"],
+                    choices=["English", "German", "Japanese", "Russian", "Chinese"],
                     value="Japanese",
                 )
                 preset_baseline_wait_penalty_dropdown = gr.Dropdown(
