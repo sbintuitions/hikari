@@ -19,7 +19,6 @@ dependencies = [
     # Client
     "gradio>=5.0",
     "fastrtc>=0.0.33",
-    "ten_vad",
     "debugpy"
 ]
 

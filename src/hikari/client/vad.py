@@ -28,7 +28,6 @@ from typing import Callable, Generator
 import fastrtc
 import librosa
 import numpy as np
-from ten_vad import TenVad
 
 
 @dataclass
@@ -146,50 +145,6 @@ from typing import TypeAlias
 StreamerGenerator: TypeAlias = Generator[fastrtc.tracks.EmitType, None, None]
 StreamerFn: TypeAlias = Callable[[tuple[int, np.ndarray], str], StreamerGenerator]
 
-
-class VADStreamHandler(fastrtc.StreamHandler):
-    def __init__(
-        self,
-        streamer_fn: StreamerFn,
-        input_sample_rate: int = 24000,
-    ):
-        super().__init__(
-            "mono",
-            24000,
-            None,
-            input_sample_rate,
-            30,
-        )
-        self.streamer_fn = streamer_fn
-        self.realtime_vad = RealtimeVAD(src_sr=input_sample_rate)
-        self.generator: StreamerGenerator | None = None
-
-    def emit(self) -> fastrtc.tracks.EmitType:
-        if self.generator is None:
-            return None
-
-        try:
-            return next(self.generator)
-        except StopIteration:
-            self.generator = None
-            return None
-
-    def receive(self, frame: tuple[int, np.ndarray]):
-        _, audio_data = frame
-        for event in self.realtime_vad.process(audio_data):
-            if event.interrupt_signal:
-                self.generator = None
-                self.clear_queue()
-            if event.full_audio is not None:
-                self.wait_for_args_sync()
-                self.latest_args[0] = event.full_audio
-                self.generator = self.streamer_fn(*self.latest_args)
-
-    def copy(self):
-        return VADStreamHandler(
-            self.streamer_fn,
-            input_sample_rate=self.input_sample_rate,
-        )
 
 
 class ConstantStreamHandler(fastrtc.StreamHandler):
