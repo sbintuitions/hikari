@@ -25,10 +25,6 @@ uv pip install torch==2.8.0 torchcodec==0.7.0 torchaudio==2.8.0 torchvision==0.2
 
 # and then
 
-# before the public release
-uv pip install "hikari @ git+ssh://git@github.com/sbintuitions/hikari" 
-
-# after the public release
 uv pip install "hikari @ git+https://github.com/sbintuitions/hikari"
 ```
 
@@ -45,10 +41,6 @@ uv pip install "hikari @ git+https://github.com/sbintuitions/hikari"
 On the client:
 
 ```bash
-# before the public release
-uv pip install "hikari @ git+ssh://git@github.com/sbintuitions/hikari" 
-
-# after the public release
 uv pip install "hikari @ git+https://github.com/sbintuitions/hikari"
 ```
 
