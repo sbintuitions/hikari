@@ -84,10 +84,6 @@ The model runs on the Mac's GPU through [MLX](https://github.com/ml-explore/mlx)
 uv venv .venv --python=3.10 && source .venv/bin/activate
 uv pip install torch==2.8.0 torchaudio==2.8.0     # plain PyPI wheels on macOS; torch is only used for the Silero VAD
 
-# before the public release
-uv pip install "hikari[mlx] @ git+ssh://git@github.com/sbintuitions/hikari"
-
-# after the public release
 uv pip install "hikari[mlx] @ git+https://github.com/sbintuitions/hikari"
 ```
 
