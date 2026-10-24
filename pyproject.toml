@@ -26,6 +26,12 @@ dependencies = [
 dev = [
     "pytest",
 ]
+# Apple-silicon inference backend: hikari-server --backend mlx
+mlx = [
+    "mlx>=0.31; sys_platform == 'darwin'",
+    "huggingface_hub",
+    "safetensors",
+]
 
 [project.scripts]
 hikari-server = "hikari.server.app:main"

@@ -26,6 +26,7 @@ WebSocket server for streaming speech-to-text translation.
 
 Usage:
     hikari-server --port 4440 --checkpoint /path/to/checkpoint --device cuda:0
+    hikari-server --port 4440 --checkpoint sbintuitions/hikari-medium --backend mlx   # Apple silicon
 """
 
 import argparse
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 class Server:
-    def __init__(self, host="0.0.0.0", port=None, checkpoint=None, device="cuda:0", debug=False):
+    def __init__(self, host="0.0.0.0", port=None, checkpoint=None, device="cuda:0", debug=False, backend="cuda", refresh_stride=0):
         self.host = host
         self.port = port
         self.debug = debug
@@ -62,10 +63,14 @@ class Server:
         self.outgoing_queue = queue.Queue()
         self.websocket = None
         self.stop_event = threading.Event()
-        from hikari.server.model_wrapper import ModelWrapper
+        if backend == "mlx":
+            from hikari.server.model_wrapper_mlx import ModelWrapperMLX as ModelWrapper
+        else:
+            from hikari.server.model_wrapper import ModelWrapper
 
+        extra = {"refresh_stride": refresh_stride} if backend == "mlx" else {}
         self.model_wrapper = ModelWrapper(
-            checkpoint=checkpoint, device=device, debug=debug
+            checkpoint=checkpoint, device=device, debug=debug, **extra
         )
         self.timer = Timer(logger=logger)
 
@@ -241,6 +246,14 @@ def main():
     parser.add_argument("--port", default=4440, type=int, help="WebSocket server port")
     parser.add_argument("--checkpoint", required=True, type=str, help="Path to model checkpoint")
     parser.add_argument("--device", default="cuda:0", type=str, help="CUDA device")
+    parser.add_argument("--backend", default="cuda", choices=["cuda", "mlx"], help="Inference backend")
+    parser.add_argument(
+        "--refresh-stride",
+        default=0,
+        type=int,
+        help="mlx backend only: APPROXIMATE faster mode, advance the encoder window in blocks of K steps and "
+        "reuse the encoder between refreshes (0 = exact, the default)",
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     if args.debug:
@@ -254,6 +267,8 @@ def main():
         device=args.device,
         # override_mode=args.override_mode,
         debug=args.debug,
+        backend=args.backend,
+        refresh_stride=args.refresh_stride,
     )
 
     server.start()
